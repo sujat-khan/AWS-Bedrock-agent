@@ -6,6 +6,9 @@ query databases, perform exact calculations, and retrieve real-time facts.
 
 import os
 import math
+import json
+import urllib.request
+import urllib.parse
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -103,6 +106,52 @@ def get_system_time() -> str:
     now = datetime.now(ZoneInfo("Asia/Kolkata"))
     return f"Current Indian Time: {now.strftime('%Y-%m-%d %H:%M:%S IST')}"
 
+
+@tool
+def get_weather(city: str) -> str:
+    """
+    Get the current real-time weather for a given city.
+    Use this tool whenever the user asks about current weather conditions or temperature.
+    Example inputs: 'Delhi', 'Bangalore', 'London', 'New York'
+    """
+    try:
+        encoded_city = urllib.parse.quote(city.strip())
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={encoded_city}&count=1&language=en&format=json"
+        
+        with urllib.request.urlopen(geo_url, timeout=10) as response:
+            geo_data = json.loads(response.read().decode())
+            
+        if not geo_data.get("results"):
+            return f"Could not find location coordinates for '{city}'."
+            
+        location = geo_data["results"][0]
+        lat, lon = location["latitude"], location["longitude"]
+        resolved_name = f"{location.get('name')}, {location.get('country', '')}"
+
+        weather_url = (
+            f"https://api.open-meteo.com/v1/forecast?"
+            f"latitude={lat}&longitude={lon}&current=temperature_2m,relative_humidity_2m,apparent_temperature,wind_speed_10m"
+        )
+        
+        with urllib.request.urlopen(weather_url, timeout=10) as response:
+            weather_data = json.loads(response.read().decode())
+            
+        current = weather_data.get("current", {})
+        temp = current.get("temperature_2m", "N/A")
+        feels_like = current.get("apparent_temperature", "N/A")
+        humidity = current.get("relative_humidity_2m", "N/A")
+        wind = current.get("wind_speed_10m", "N/A")
+
+        return (
+            f"Current Weather in {resolved_name}:\n"
+            f"- Temperature: {temp}°C (Feels like: {feels_like}°C)\n"
+            f"- Humidity: {humidity}%\n"
+            f"- Wind Speed: {wind} km/h"
+        )
+    except Exception as e:
+        return f"Error fetching weather for '{city}': {str(e)}"
+
+
 # Tavily web search tool
 tavily_search = TavilySearch(
     max_results=5,
@@ -112,4 +161,4 @@ tavily_search = TavilySearch(
 )
 
 # List of all available tools to bind to our agent
-ALL_TOOLS = [calculate, aws_service_advisor, get_system_time, tavily_search]
+ALL_TOOLS = [calculate, aws_service_advisor, get_system_time, get_weather, tavily_search]
