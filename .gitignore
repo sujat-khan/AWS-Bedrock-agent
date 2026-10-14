@@ -1,0 +1,36 @@
+# Environment variables and secrets (NEVER commit secrets!)
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Python virtual environments
+myvenv/
+venv/
+.venv/
+env/
+ENV/
+
+# Bytecode & Caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE & Editor settings
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Logs and temporary files
+*.log
+*.tmp
+
+# Operating system files
+.DS_Store
+Thumbs.db
+desktop.ini
