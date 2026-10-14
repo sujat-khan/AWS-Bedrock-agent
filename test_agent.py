@@ -1,15 +1,20 @@
 """
-Interactive CLI Tester for LangGraph + AWS Bedrock + Bedrock AgentCore.
+Interactive CLI Tester with Amazon Bedrock AgentCore Memory.
 
-Run this script to test the agent interactively in your terminal:
-    python test_agent.py
-
-Or run automated demo scenarios:
-    python test_agent.py --demo
+Features:
+1. Multi-turn conversation: Remembers your name, questions, and context across turns.
+2. AWS AgentCore Memory integration: Reads and writes conversation events to AWS.
+3. Step-by-step reasoning inspector: Shows tool calls, arguments, and live responses.
+4. Session commands:
+   - Type '/history' to see all past turns stored in AWS.
+   - Type '/new' to start a fresh conversation session.
+   - Type 'quit' or 'exit' to exit.
 """
 
 import sys
+import uuid
 from graph import create_agent_graph
+from memory import load_session_messages, save_conversation_turn
 from langchain_core.messages import HumanMessage, AIMessage, ToolMessage
 
 
@@ -33,65 +38,98 @@ def format_response(content) -> str:
     return str(content)
 
 
-def run_query(graph, query: str):
-    """Run a query through the LangGraph agent and print step-by-step reasoning."""
+def run_query(graph, query: str, session_id: str, actor_id: str = "sujat"):
+    """
+    Run a query through the LangGraph agent with AWS Bedrock AgentCore Memory.
+
+    Workflow:
+    1. Fetch prior conversation turns from AWS AgentCore Memory for this session.
+    2. Inject prior messages + new query into LangGraph state.
+    3. Run the reasoning graph (Bedrock Converse + tools).
+    4. Save the completed turn (user query + assistant answer) back to AWS.
+    """
     print(f"\nUser: {query}")
     print("-" * 60)
+
+    # 1. Load conversation history from AWS Bedrock AgentCore Memory
+    history = load_session_messages(session_id=session_id, actor_id=actor_id)
+    if history:
+        print(f"  [AgentCore Memory]: Loaded {len(history)} prior message(s) from AWS.")
+
     print("Agent is reasoning...")
 
-    initial_state = {"messages": [HumanMessage(content=query)]}
-    result = graph.invoke(initial_state)
+    # 2. Build initial state with complete history + current user message
+    new_message = HumanMessage(content=query)
+    initial_state = {"messages": history + [new_message]}
 
+    # 3. Invoke LangGraph
+    result = graph.invoke(initial_state)
     messages = result.get("messages", [])
 
     # Print intermediate tool calls and tool outputs
-    for msg in messages:
+    for msg in messages[len(history):]:  # Only print new turns
         if isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None):
             for tc in msg.tool_calls:
                 print(f"\n  [Tool Triggered]: {tc['name']}")
                 print(f"  [Tool Arguments]: {tc['args']}")
         elif isinstance(msg, ToolMessage):
-            print(f"  [Tool Output]   : {msg.content}")
+            print(f"  [Tool Output]   : {msg.content[:200]}..." if len(str(msg.content)) > 200 else f"  [Tool Output]   : {msg.content}")
 
     # Print final agent answer
     final_message = messages[-1] if messages else None
-    if final_message:
-        print("\nAgent Response:")
-        print("=" * 60)
-        print(format_response(final_message.content))
-        print("=" * 60)
+    final_text = format_response(final_message.content) if final_message else "No response generated."
+
+    print("\nAgent Response:")
+    print("=" * 60)
+    print(final_text)
+    print("=" * 60)
+
+    # 4. Save new turn to AWS Bedrock AgentCore Memory
+    event_id = save_conversation_turn(
+        session_id=session_id,
+        user_text=query,
+        assistant_text=final_text,
+        actor_id=actor_id
+    )
+    if event_id:
+        print(f"  [AgentCore Memory]: Turn saved to AWS (Event ID: {event_id})")
 
 
-def run_demo(graph):
-    """Run predefined demo questions demonstrating tools and cloud reasoning."""
-    print("\nRunning Automated Demo Queries...")
-    
-    demo_queries = [
-        "What is Amazon Bedrock AgentCore and how does it compare to raw Bedrock?",
-        "Can you calculate the square root of 625 plus 175?",
-        "What is the current UTC time, and what is Amazon S3 used for?",
-    ]
-
-    for q in demo_queries:
-        run_query(graph, q)
-        print("\n" + "#" * 60 + "\n")
+def show_history(session_id: str, actor_id: str = "sujat"):
+    """Display all events stored in AWS Bedrock AgentCore Memory for this session."""
+    history = load_session_messages(session_id=session_id, actor_id=actor_id)
+    print("\n" + "=" * 60)
+    print(f"  AWS AgentCore Memory History (Session: {session_id})")
+    print("=" * 60)
+    if not history:
+        print("  (No conversation history found for this session yet).")
+    else:
+        for idx, msg in enumerate(history, 1):
+            sender = "User" if isinstance(msg, HumanMessage) else "Agent"
+            content = msg.content if isinstance(msg.content, str) else str(msg.content)
+            print(f"\n[{idx}] {sender}: {content.strip()}")
+    print("=" * 60 + "\n")
 
 
 def main():
     print("==========================================================")
-    print("  LangGraph + Amazon Bedrock + Bedrock AgentCore Tester   ")
+    print("  LangGraph + Bedrock AgentCore Memory Interactive Tester ")
     print("==========================================================")
     
     print("\nInitializing compiled LangGraph agent...")
     graph = create_agent_graph()
     print("Ready!\n")
 
-    if "--demo" in sys.argv:
-        run_demo(graph)
-        return
+    # Default session identifier
+    session_id = "session-sujat-01"
+    actor_id = "sujat"
 
-    print("Type your questions below (or type 'quit' / 'exit' to stop).")
-    print("Try asking about AWS services, math calculations, or the current time!")
+    print(f"Current Session ID : {session_id}")
+    print(f"Current Actor ID   : {actor_id}")
+    print("Commands:")
+    print("  /history -> View full conversation stored in AWS AgentCore Memory")
+    print("  /new     -> Start a new clean session")
+    print("  quit     -> Exit")
     print("-" * 60)
 
     while True:
@@ -99,11 +137,21 @@ def main():
             user_input = input("\nYou > ").strip()
             if not user_input:
                 continue
+
             if user_input.lower() in ["quit", "exit", "q"]:
                 print("Exiting. Happy learning!")
                 break
 
-            run_query(graph, user_input)
+            if user_input.lower() == "/history":
+                show_history(session_id, actor_id)
+                continue
+
+            if user_input.lower() == "/new":
+                session_id = f"session-sujat-{uuid.uuid4().hex[:6]}"
+                print(f"\n[Session Switched] Now using new session: {session_id}")
+                continue
+
+            run_query(graph, user_input, session_id=session_id, actor_id=actor_id)
 
         except (KeyboardInterrupt, EOFError):
             print("\nExiting. Happy learning!")

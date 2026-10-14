@@ -117,18 +117,34 @@ While LangGraph handles the agent's internal reasoning logic in Python, **Amazon
 * **Workload Identity**: Manages IAM roles and OAuth 2.0 credentials so agents can securely access resources on behalf of users.
 * **CloudWatch Observability**: Traces prompts, tool execution latencies, and token costs.
 
+### How AgentCore Memory Works (`memory.py`):
+1. **Writing turns (`create_event`)**:
+   After the agent produces a response, it records a conversation event to AWS containing both `USER` and `ASSISTANT` messages tagged with `sessionId` and `actorId`.
+2. **Reading turns (`list_events`)**:
+   When the user asks a new question in the same session, the agent calls `list_events`, reconstructs the past `HumanMessage` and `AIMessage` objects, and pre-populates LangGraph's state.
+
 ### The Entrypoint Pattern (`app.py`):
 ```python
 from bedrock_agentcore import BedrockAgentCoreApp
+from memory import load_session_messages, save_conversation_turn
 
 app = BedrockAgentCoreApp()
 
 @app.entrypoint
 def invoke(request: dict) -> dict:
-    # Invoked by Bedrock AgentCore serverless container
+    session_id = request.get("sessionId", "default_session")
     user_input = request.get("prompt")
-    result = agent_graph.invoke({"messages": [("user", user_input)]})
-    return {"response": result["messages"][-1].content}
+    
+    # 1. Fetch previous context from AWS AgentCore Memory
+    history = load_session_messages(session_id)
+    
+    # 2. Run LangGraph with full history
+    result = agent_graph.invoke({"messages": history + [("user", user_input)]})
+    answer = result["messages"][-1].content
+    
+    # 3. Save turn back to AWS AgentCore Memory
+    save_conversation_turn(session_id, user_input, answer)
+    return {"response": answer}
 ```
 
 ---
